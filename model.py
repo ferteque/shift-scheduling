@@ -1,145 +1,129 @@
 import pandas as pd
 import pulp
+import warnings
 
 def model_problem():
+    # Silenciar avisos de format d'Excel
+    warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
     # 1. CARREGAR DEFINICIÓ DE TORNS
-    # Esperem un excel amb: shift_id, start, end
-    # 1. CARREGAR DEFINICIÓ DE TORNS
-    shiftdf = pd.read_excel("shifts.xlsx")
-    
-    # NETEJA DE COLUMNES: Convertim a minúscules i treiem espais en blanc
-    shiftdf.columns = shiftdf.columns.str.strip().str.lower()
-    
-    # Comprovació de seguretat
-    if 'start' not in shiftdf.columns or 'end' not in shiftdf.columns:
-        print(f"❌ ERROR: Les columnes de 'shifts.xlsx' han de ser 'start' i 'end'.")
-        print(f"Columnes trobades actualment: {list(shiftdf.columns)}")
+    try:
+        shiftdf = pd.read_excel("shifts.xlsx")
+        shiftdf.columns = shiftdf.columns.str.strip().str.lower()
+        shifts = shiftdf.to_dict('records')
+        num_shifts_per_day = len(shifts)
+        total_periods = 7 * num_shifts_per_day
+    except Exception as e:
+        print(f"❌ Error llegint shifts.xlsx: {e}")
         return None
 
-    shifts = shiftdf.to_dict('records')
-    num_shifts_per_day = len(shifts)
-    total_periods = 7 * num_shifts_per_day
-
     # 2. CARREGAR TREBALLADORS
-    workerdf = pd.read_excel("workers.xlsx", header=0)
-    # També netegem les columnes per si de cas
-    workerdf.columns = workerdf.columns.str.strip() 
-    
-    workers_data = {}
-    for _, row in workerdf.iterrows():
-        name = row[0]
-        workers_data[name] = {"period_avail": []}
+    try:
+        workerdf = pd.read_excel("workers.xlsx", header=0)
+        workerdf.columns = workerdf.columns.str.strip()
+        workers_data = {}
         
-        for day in range(7):
-            # Agafem les dades per posició (columna 1 i 2, 3 i 4...) 
-            # per evitar errors amb els noms dels dies
-            w_start = row[1 + day * 2]
-            w_end = row[2 + day * 2]
+        for _, row in workerdf.iterrows():
+            name = row.iloc[0]
+            workers_data[name] = {"period_avail": []}
             
-            for s in shifts:
-                # Ara s['start'] i s['end'] funcionaran segur
-                can_work = int((w_start <= s['start']) and (w_end >= s['end']))
-                workers_data[name]["period_avail"].append(can_work)
+            for day in range(7):
+                # Accés per posició per evitar errors de noms de columnes
+                w_start = row.iloc[1 + day * 2]
+                w_end = row.iloc[2 + day * 2]
+                
+                for s in shifts:
+                    # Comprovem si el treballador cobreix el torn sencer
+                    can_work = int((w_start <= s['start']) and (w_end >= s['end']))
+                    workers_data[name]["period_avail"].append(can_work)
+    except Exception as e:
+        print(f"❌ Error llegint workers.xlsx: {e}")
+        return None
 
-    # 3. CARREGAR DEMANDA (quants treballadors per cada torn)
-    # Un excel amb una sola fila o columna amb els 21 valors (7 dies * 3 torns)
-    requirements = pd.read_excel("requirements.xlsx", header=None).iloc[:, 0].tolist()
+    # 3. CARREGAR DEMANDA
+    try:
+        # Llegim la primera columna del fitxer requirements
+        requirements = pd.read_excel("requirements.xlsx", header=None).iloc[:, 0].tolist()
+        if len(requirements) < total_periods:
+            print(f"⚠️ Alerta: requirements.xlsx només té {len(requirements)} valors, se'n necessiten {total_periods}.")
+            return None
+    except Exception as e:
+        print(f"❌ Error llegint requirements.xlsx: {e}")
+        return None
 
     # 4. DEFINICIÓ DEL PROBLEMA
     problem = pulp.LpProblem("ScheduleWorkers", pulp.LpMinimize)
 
-    # Crear variables de decisió (X_treballador_torn)
+    # Crear variables de decisió
     for name in workers_data:
         workers_data[name]["worked_periods"] = [
-            pulp.LpVariable(f"x_{name}_{p}", cat=pulp.LpBinary, upBound=workers_data[name]["period_avail"][p])
+            pulp.LpVariable(f"x_{name.replace(' ', '_')}_{p}", cat=pulp.LpBinary, 
+                            upBound=workers_data[name]["period_avail"][p])
             for p in range(total_periods)
         ]
 
-    # FUNCIÓ OBJECTIU: Minimitzar el total de torns assignats (o optimitzar segons convingui)
-    total_shifts = []
-    for name in workers_data:
-        total_shifts.extend(workers_data[name]["worked_periods"])
-    problem += pulp.lpSum(total_shifts)
-
     # 5. RESTRICCIONS
 
-    # A) Cobrir la demanda de cada torn
+    # A) Cobrir la demanda mínima de cada torn
     for p in range(total_periods):
         problem += pulp.lpSum([workers_data[name]["worked_periods"][p] for name in workers_data]) >= requirements[p]
 
-    # B) Màxim un torn per dia (Evita que si els torns se sobreposen, un treballador faci dos alhora)
+    # B) Restriccions individuals
     for name in workers_data:
+        total_worked = pulp.lpSum(workers_data[name]["worked_periods"])
+        
+        # --- RESTRICCIÓ D'EQUITAT (Mínims i Màxims) ---
+        # Ajusta aquests valors segons el teu contracte (ex: 4 a 5 torns per setmana)
+        problem += total_worked >= 4, f"MinTorns_{name}"
+        problem += total_worked <= 5, f"MaxTorns_{name}"
+
+        # C) Màxim un torn per dia (Evita sobreposicions)
         for day in range(7):
             day_start = day * num_shifts_per_day
             day_end = (day + 1) * num_shifts_per_day
             problem += pulp.lpSum(workers_data[name]["worked_periods"][day_start:day_end]) <= 1
 
-    # C) Descans setmanal (Exemple: Mínim 2 dies lliures a la setmana)
-    # Creem una variable auxiliar per saber si un treballador treballa un dia concret
-    for name in workers_data:
-        days_worked = []
-        for day in range(7):
-            is_working_day = pulp.LpVariable(f"working_{name}_day_{day}", cat=pulp.LpBinary)
-            day_shifts = workers_data[name]["worked_periods"][day*num_shifts_per_day : (day+1)*num_shifts_per_day]
-            
-            # Si treballa qualsevol torn, is_working_day serà 1
-            for s_var in day_shifts:
-                problem += is_working_day >= s_var
-            
-            days_worked.append(is_working_day)
-        
-        # Obliguem a que treballi com a màxim 5 dies de 7
-        problem += pulp.lpSum(days_worked) <= 5
-
     # 6. RESOLUCIÓ
     try:
-        # Intentem cridar el solver d'una manera més compatible
-        # Això buscarà qualsevol solver de HiGHS disponible (CMD o nativa)
-        solver = pulp.getSolver('HiGHS', msg=0)
-        
+        # Utilitzem HiGHS (assegura't de tenir 'highspy' instal·lat a l'env)
+        solver = pulp.HiGHS_CMD(msg=0)
         status = problem.solve(solver)
         
         if status != pulp.LpStatusOptimal:
-            print(f"⚠️ Estat: {pulp.LpStatus[status]}")
+            print(f"⚠️ Estat del solver: {pulp.LpStatus[status]}")
             if status == pulp.LpStatusInfeasible:
-                print("Lògica: No es poden cobrir els torns. Falta personal o la disponibilitat no quadra.")
+                print("❌ Impossible: Revisa si demanes més gent de la que tens o si les disponibilitats són massa curtes.")
             return None
-            
     except Exception as e:
-        print(f"❌ Error amb HiGHS: {e}")
-        print("Intentant Pla C (Solver intern de PuLP)...")
-        try:
-            # L'últim recurs: PulP Pulp_CHOCO o COIN_CMD
-            problem.solve(pulp.PULP_CBC_CMD(msg=0))
-        except:
-            print("Cap solver disponible.")
-            return None
+        print(f"❌ Error amb el solver: {e}")
+        return None
 
-    # 7. GENERAR RESULTATS (només si s'ha resolt)
+    # 7. GENERAR RESULTATS
     output = []
     for name in workers_data:
         row = [name]
+        # Creem una llista buida per cada dia per omplir-la ordenadament
+        schedule_by_day = ["" for _ in range(7)]
         for p in range(total_periods):
-            # Comprovem que la variable tingui valor abans de llegir-lo
             var = workers_data[name]["worked_periods"][p]
             if var.varValue is not None and var.varValue > 0.9:
                 day = p // num_shifts_per_day
                 shift_idx = p % num_shifts_per_day
-                row.append(f"Dia {day+1}-Torn {shift_idx+1}")
+                schedule_by_day[day] = f"Torn {shift_idx + 1}"
+        
+        row.extend(schedule_by_day)
         output.append(row)
 
     return output
 
 if __name__ == "__main__":
-    # Silenciar avisos de openpyxl
-    import warnings
-    warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
-
-    schedule = model_problem()
+    result = model_problem()
     
-    if schedule:
-        df_out = pd.DataFrame(schedule)
-        df_out.to_csv("schedule_resultat.csv", index=False, header=False)
+    if result:
+        # Columnes per al CSV
+        cols = ["Treballador", "Dilluns", "Dimarts", "Dimecres", "Dijous", "Divendres", "Dissabte", "Diumenge"]
+        df_out = pd.DataFrame(result, columns=cols)
+        df_out.to_csv("schedule_resultat.csv", index=False)
         print("✅ Quadrant generat amb èxit a 'schedule_resultat.csv'")
     else:
-        print("❌ No s'ha pogut generar el quadrant per falta de dades o error del solver.")
+        print("❌ No s'ha pogut generar el quadrant.")
