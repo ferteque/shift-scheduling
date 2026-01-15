@@ -92,27 +92,28 @@ def model_problem():
         problem += pulp.lpSum(days_worked) <= 5
 
     # 6. RESOLUCIÓ
-    # ... (resta del codi anterior)
-
-    # 6. RESOLUCIÓ
-    # Intentem trobar el solver instal·lat al sistema
-    # 6. RESOLUCIÓ
     try:
-        # Utilitzem HiGHS, que és més modern i fàcil d'executar
-        solver = pulp.HiGHS_CMD(msg=0)
+        # Intentem cridar el solver d'una manera més compatible
+        # Això buscarà qualsevol solver de HiGHS disponible (CMD o nativa)
+        solver = pulp.getSolver('HiGHS', msg=0)
         
         status = problem.solve(solver)
         
         if status != pulp.LpStatusOptimal:
-            print(f"⚠️ Avís: No s'ha trobat una solució òptima. Estat: {pulp.LpStatus[status]}")
+            print(f"⚠️ Estat: {pulp.LpStatus[status]}")
             if status == pulp.LpStatusInfeasible:
-                print("Lògica: No hi ha prou treballadors per cobrir els torns demanats.")
+                print("Lògica: No es poden cobrir els torns. Falta personal o la disponibilitat no quadra.")
             return None
             
     except Exception as e:
-        print(f"❌ Error crític resolent el problema: {e}")
-        print("Intenta instal·lar el solver amb: pip install highspy")
-        return None
+        print(f"❌ Error amb HiGHS: {e}")
+        print("Intentant Pla C (Solver intern de PuLP)...")
+        try:
+            # L'últim recurs: PulP Pulp_CHOCO o COIN_CMD
+            problem.solve(pulp.PULP_CBC_CMD(msg=0))
+        except:
+            print("Cap solver disponible.")
+            return None
 
     # 7. GENERAR RESULTATS (només si s'ha resolt)
     output = []
