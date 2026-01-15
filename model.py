@@ -1,149 +1,105 @@
-from operator import itemgetter
-import pandas
+import pandas as pd
 import pulp
 
-from example_inputs import (
-    periods,
-)
-
-AM_PERIODS = 42
-AM_QUARTERS = 28
-
-# Divide week in 42 4-hour periods. 0 = Monday 0-4, 1 = Monday 4-8, 2 = Monday 8-12........ 39 = Sunday 12-16, 40 = Sunday 16-20, 41 = Sunday 20-24
-# 
-
-# workers_data = {
-#   worker1: {
-#       "period_avail": [0, 1, 1, 1, 0, 0,........, 1, 1, 0, 0]. Length 42,
-#       "skill_level": int in 0-100 
-#   }
-# }
-
-# quarters = [5, 4, 10, .... , 8, 9, 12] Amount of workers needed for each quarter of day. Length 28
-
 def model_problem():
+    # 1. CARREGAR DEFINICIÓ DE TORNS
+    # Esperem un excel amb: shift_id, start, end
+    shiftdf = pd.read_excel("shifts.xlsx")
+    shifts = shiftdf.to_dict('records')
+    num_shifts_per_day = len(shifts)
+    total_periods = 7 * num_shifts_per_day
 
-    workerdf = pandas.read_excel("workers.xlsx", header=0) 
+    # 2. CARREGAR TREBALLADORS
+    # Estructura: Nom, Dilluns_Inici, Dilluns_Final, Dimarts_Inici...
+    workerdf = pd.read_excel("workers.xlsx", header=0)
     workers_data = {}
-    for iteration in workerdf.iterrows(): 
-        row = iteration[1] 
-        name = row[0] 
-        workers_data[name] = {} 
-        workers_data[name]["skill_level"] = row[1] 
-        workers_data[name]["period_avail"] = [] 
-        for day in range(7): 
-            for period in range(6): 
-                workers_data[name]["period_avail"].append(
-                    int((period*4 >= row[2 + day * 2]) and ((period+1)*4 <= row[2 + day*2 + 1]))
-                )
+    
+    for _, row in workerdf.iterrows():
+        name = row[0]
+        workers_data[name] = {"period_avail": []}
+        
+        for day in range(7):
+            w_start = row[1 + day * 2]
+            w_end = row[2 + day * 2]
+            
+            for s in shifts:
+                # El treballador pot fer el torn si la seva disponibilitat cobreix tot el torn
+                can_work = int((w_start <= s['start']) and (w_end >= s['end']))
+                workers_data[name]["period_avail"].append(can_work)
 
-    quarters = pandas.read_excel("./quarter.xlsx", header=0).loc[0].tolist()
+    # 3. CARREGAR DEMANDA (quants treballadors per cada torn)
+    # Un excel amb una sola fila o columna amb els 21 valors (7 dies * 3 torns)
+    requirements = pd.read_excel("requirements.xlsx", header=None).iloc[:, 0].tolist()
 
+    # 4. DEFINICIÓ DEL PROBLEMA
     problem = pulp.LpProblem("ScheduleWorkers", pulp.LpMinimize)
 
-    workerid = 0
-    for worker in workers_data.keys():
-        workerstr = str(workerid)
-        periodid = 0
+    # Crear variables de decisió (X_treballador_torn)
+    for name in workers_data:
+        workers_data[name]["worked_periods"] = [
+            pulp.LpVariable(f"x_{name}_{p}", cat=pulp.LpBinary, upBound=workers_data[name]["period_avail"][p])
+            for p in range(total_periods)
+        ]
 
-        workers_data[worker]["worked_periods"] = []
-        workers_data[worker]["rest_periods"] = []
-        workers_data[worker]["weekend_periods"] = []
+    # FUNCIÓ OBJECTIU: Minimitzar el total de torns assignats (o optimitzar segons convingui)
+    total_shifts = []
+    for name in workers_data:
+        total_shifts.extend(workers_data[name]["worked_periods"])
+    problem += pulp.lpSum(total_shifts)
 
-        for period in workers_data[worker]["period_avail"]:
+    # 5. RESTRICCIONS
+
+    # A) Cobrir la demanda de cada torn
+    for p in range(total_periods):
+        problem += pulp.lpSum([workers_data[name]["worked_periods"][p] for name in workers_data]) >= requirements[p]
+
+    # B) Màxim un torn per dia (Evita que si els torns se sobreposen, un treballador faci dos alhora)
+    for name in workers_data:
+        for day in range(7):
+            day_start = day * num_shifts_per_day
+            day_end = (day + 1) * num_shifts_per_day
+            problem += pulp.lpSum(workers_data[name]["worked_periods"][day_start:day_end]) <= 1
+
+    # C) Descans setmanal (Exemple: Mínim 2 dies lliures a la setmana)
+    # Creem una variable auxiliar per saber si un treballador treballa un dia concret
+    for name in workers_data:
+        days_worked = []
+        for day in range(7):
+            is_working_day = pulp.LpVariable(f"working_{name}_day_{day}", cat=pulp.LpBinary)
+            day_shifts = workers_data[name]["worked_periods"][day*num_shifts_per_day : (day+1)*num_shifts_per_day]
             
-            periodstr = str(periodid)
-            # worked periods: worker W works in period P
-            workers_data[worker]["worked_periods"].append(
-                pulp.LpVariable("x_{}_{}".format(workerstr, periodstr), cat=pulp.LpBinary, upBound=period)
-            )
-            # rest periods: worker W takes a 12-hour rest starting on period P
-            workers_data[worker]["rest_periods"].append(
-                pulp.LpVariable("d_{}_{}".format(workerstr, periodstr), cat=pulp.LpBinary)
-            )
-            # weekend periods: worker W takes a 48-hour rest starting on period P
-            workers_data[worker]["weekend_periods"].append(
-                pulp.LpVariable("f_{}_{}".format(workerstr, periodstr), cat=pulp.LpBinary)
-            )
-
-            periodid += 1
-
-        workerid += 1
-
-    # Create objective function (amount of turns worked)
-    objective_function = None
-    for worker in workers_data.keys():
-        objective_function += sum(workers_data[worker]["worked_periods"])
-    
-    problem += objective_function
-
-    # Every quarter minimum workers constraint
-    for quarter in range(AM_QUARTERS):
-        workquartsum = None
-        for worker in workers_data.keys():
-            workquartsum += workers_data[worker]["worked_periods"][quarter + quarter // 2] + workers_data[worker]["worked_periods"][quarter + quarter // 2 + 1]
-        
-        problem += workquartsum >= quarters[quarter]
+            # Si treballa qualsevol torn, is_working_day serà 1
+            for s_var in day_shifts:
+                problem += is_working_day >= s_var
             
-    # No worker with skill <= 25 is left alone
-    for period in range(AM_PERIODS):
-        skillperiodsum = None
-        for worker in workers_data.keys():
-            skillperiodsum += workers_data[worker]["worked_periods"][period] * workers_data[worker]["skill_level"]
+            days_worked.append(is_working_day)
         
-        problem += skillperiodsum >= 26
+        # Obliguem a que treballi com a màxim 5 dies de 7
+        problem += pulp.lpSum(days_worked) <= 5
 
-    # Each worker must have one 12-hour break per day
-    for day in range(7):
-        for worker in workers_data.keys():
-            problem += sum(workers_data[worker]["rest_periods"][day * 6:(day + 1) * 6]) >= 1
-
-    # If a worker takes a 12-hour break, can't work in the immediate 3 periods
-
-    for period in range(AM_PERIODS):
-        for worker in workers_data.keys():
-            access_list = [period, (period + 1) % 42, (period + 2) % 42]
-            problem += sum(list(itemgetter(*access_list)(workers_data[worker]["worked_periods"]))) <= 3 * (1 - workers_data[worker]["rest_periods"][period])
-
-    # A worker can't work more than 12 hours every 24 hours
-    for period in range(AM_PERIODS):
-        for worker in workers_data.keys():
-            access_list = [period, (period + 1)  % 42, (period + 2) % 42, (period + 3) % 42, (period + 4) % 42, (period + 5) % 42]
-            problem += sum(list(itemgetter(*access_list)(workers_data[worker]["worked_periods"]))) <= 3
-
-    # Each worker must have one 48-hour break per week
-
-    for worker in workers_data.keys():
-        problem += sum(workers_data[worker]["weekend_periods"]) == 1
-
-    # If a worker takes a 48-hour break, can't work in the inmediate 12 periods
-
-    for period in range(AM_PERIODS):
-        for worker in workers_data.keys():
-            for miniperiod in range(12):
-                problem += workers_data[worker]["worked_periods"][(period + miniperiod) % AM_PERIODS] <= (1 - workers_data[worker]["weekend_periods"][period])
-        problem += workers_data[worker]["worked_periods"][(period + 12) % AM_PERIODS] >= workers_data[worker]["weekend_periods"][period]
-
+    # 6. RESOLUCIÓ
     try:
-        problem.solve()
+        problem.solve(pulp.PULP_CBC_CMD(msg=0))
     except Exception as e:
-        print("Can't solve problem: {}".format(e))
+        print(f"Error resolent el problema: {e}")
 
-    for worker in workers_data.keys(): 
-        workers_data[worker]["schedule"] = [] 
-        for element in range(len(workers_data[worker]["worked_periods"])):
-            if workers_data[worker]["worked_periods"][element].varValue == 1:
-                workers_data[worker]["schedule"].append(periods[element])
+    # 7. GENERAR RESULTATS
+    output = []
+    for name in workers_data:
+        row = [name]
+        for p in range(total_periods):
+            if pulp.value(workers_data[name]["worked_periods"][p]) == 1:
+                day = p // num_shifts_per_day
+                shift_idx = p % num_shifts_per_day
+                row.append(f"Dia {day+1}-Torn {shift_idx+1}")
+        output.append(row)
 
-    return problem, workers_data
+    return output
 
 if __name__ == "__main__":
-    problem, workers_data = model_problem()
-
-    f = open("./schedule.csv", "w")
-    for worker in workers_data.keys():
-        f.write(worker)
-        for element in workers_data[worker]["schedule"]:
-            f.write(", " + element)
-        f.write("\n")
-    f.close()
+    schedule = model_problem()
+    
+    # Guardar a CSV
+    df_out = pd.DataFrame(schedule)
+    df_out.to_csv("schedule_resultat.csv", index=False, header=False)
+    print("Quadrant generat amb èxit a 'schedule_resultat.csv'")
