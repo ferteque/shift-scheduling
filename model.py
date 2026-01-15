@@ -96,23 +96,22 @@ def model_problem():
 
     # 6. RESOLUCIÓ
     # Intentem trobar el solver instal·lat al sistema
-    ruta_cbc = "/usr/bin/cbc" 
-    
-    solver = pulp.PULP_CBC_CMD(path=ruta_cbc, msg=0)
-    
-    # Comprovem si el solver és executable a la ruta indicada
-    if not solver.available():
-        print(f"❌ ERROR: No s'ha trobat l'executable a {ruta_cbc}")
-        print("Executa 'which cbc' a la terminal i posa la ruta correcta al codi.")
-        return None
-
+    # 6. RESOLUCIÓ
     try:
+        # Utilitzem HiGHS, que és més modern i fàcil d'executar
+        solver = pulp.HiGHS_CMD(msg=0)
+        
         status = problem.solve(solver)
+        
         if status != pulp.LpStatusOptimal:
-            print(f"Avís: No s'ha trobat una solució òptima. Estat: {pulp.LpStatus[status]}")
+            print(f"⚠️ Avís: No s'ha trobat una solució òptima. Estat: {pulp.LpStatus[status]}")
+            if status == pulp.LpStatusInfeasible:
+                print("Lògica: No hi ha prou treballadors per cobrir els torns demanats.")
             return None
+            
     except Exception as e:
-        print(f"Error crític resolent el problema: {e}")
+        print(f"❌ Error crític resolent el problema: {e}")
+        print("Intenta instal·lar el solver amb: pip install highspy")
         return None
 
     # 7. GENERAR RESULTATS (només si s'ha resolt)
