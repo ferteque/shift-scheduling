@@ -85,8 +85,13 @@ def model_problem():
 
     # 6. RESOLUCIÓ
     try:
-        # Utilitzem HiGHS (assegura't de tenir 'highspy' instal·lat a l'env)
-        solver = pulp.HiGHS_CMD(msg=0)
+        # Importem el solver de forma nativa per evitar problemes d'executable
+        from pulp import HiGHS_CMD
+        
+        # Intentem forçar el solver a través de la interfície nativa de highspy
+        # Si 'highspy' està instal·lat, PuLP l'hauria de detectar així:
+        solver = pulp.getSolver('HiGHS', msg=0)
+        
         status = problem.solve(solver)
         
         if status != pulp.LpStatusOptimal:
@@ -94,9 +99,20 @@ def model_problem():
             if status == pulp.LpStatusInfeasible:
                 print("❌ Impossible: Revisa si demanes més gent de la que tens o si les disponibilitats són massa curtes.")
             return None
+            
     except Exception as e:
-        print(f"❌ Error amb el solver: {e}")
-        return None
+        print(f"⚠️ Error amb HiGHS: {e}")
+        print("Intentant Pla de Reserva: Solver CBC del sistema...")
+        try:
+            # Si HiGHS falla, provem amb el CBC que hem instal·lat abans via 'apt'
+            # No posem ruta manual, deixem que PuLP el busqui al sistema
+            solver_cbc = pulp.PULP_CBC_CMD(msg=0)
+            status = problem.solve(solver_cbc)
+            if status != pulp.LpStatusOptimal:
+                return None
+        except Exception as e2:
+            print(f"❌ Cap solver funciona: {e2}")
+            return None
 
     # 7. GENERAR RESULTATS
     output = []
