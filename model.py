@@ -78,17 +78,34 @@ def model_problem():
         problem += pulp.lpSum(days_worked) <= 5
 
     # 6. RESOLUCIÓ
-    try:
-        problem.solve(pulp.PULP_CBC_CMD(msg=0))
-    except Exception as e:
-        print(f"Error resolent el problema: {e}")
+    # ... (resta del codi anterior)
 
-    # 7. GENERAR RESULTATS
+    # 6. RESOLUCIÓ
+    # Intentem trobar el solver instal·lat al sistema
+    solver = pulp.PULP_CBC_CMD(msg=0)
+    
+    # Comprovem si el solver està disponible abans d'intentar-ho
+    if not solver.available():
+        print("ERROR: El solver CBC no s'ha trobat. Prova d'executar: sudo apt-get install coinor-cbc")
+        return None
+
+    try:
+        status = problem.solve(solver)
+        if status != pulp.LpStatusOptimal:
+            print(f"Avís: No s'ha trobat una solució òptima. Estat: {pulp.LpStatus[status]}")
+            return None
+    except Exception as e:
+        print(f"Error crític resolent el problema: {e}")
+        return None
+
+    # 7. GENERAR RESULTATS (només si s'ha resolt)
     output = []
     for name in workers_data:
         row = [name]
         for p in range(total_periods):
-            if pulp.value(workers_data[name]["worked_periods"][p]) == 1:
+            # Comprovem que la variable tingui valor abans de llegir-lo
+            var = workers_data[name]["worked_periods"][p]
+            if var.varValue is not None and var.varValue > 0.9:
                 day = p // num_shifts_per_day
                 shift_idx = p % num_shifts_per_day
                 row.append(f"Dia {day+1}-Torn {shift_idx+1}")
@@ -97,9 +114,15 @@ def model_problem():
     return output
 
 if __name__ == "__main__":
+    # Silenciar avisos de openpyxl
+    import warnings
+    warnings.filterwarnings("ignore", category=UserWarning, module="openpyxl")
+
     schedule = model_problem()
     
-    # Guardar a CSV
-    df_out = pd.DataFrame(schedule)
-    df_out.to_csv("schedule_resultat.csv", index=False, header=False)
-    print("Quadrant generat amb èxit a 'schedule_resultat.csv'")
+    if schedule:
+        df_out = pd.DataFrame(schedule)
+        df_out.to_csv("schedule_resultat.csv", index=False, header=False)
+        print("✅ Quadrant generat amb èxit a 'schedule_resultat.csv'")
+    else:
+        print("❌ No s'ha pogut generar el quadrant per falta de dades o error del solver.")
