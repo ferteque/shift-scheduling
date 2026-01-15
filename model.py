@@ -4,26 +4,40 @@ import pulp
 def model_problem():
     # 1. CARREGAR DEFINICIÓ DE TORNS
     # Esperem un excel amb: shift_id, start, end
+    # 1. CARREGAR DEFINICIÓ DE TORNS
     shiftdf = pd.read_excel("shifts.xlsx")
+    
+    # NETEJA DE COLUMNES: Convertim a minúscules i treiem espais en blanc
+    shiftdf.columns = shiftdf.columns.str.strip().str.lower()
+    
+    # Comprovació de seguretat
+    if 'start' not in shiftdf.columns or 'end' not in shiftdf.columns:
+        print(f"❌ ERROR: Les columnes de 'shifts.xlsx' han de ser 'start' i 'end'.")
+        print(f"Columnes trobades actualment: {list(shiftdf.columns)}")
+        return None
+
     shifts = shiftdf.to_dict('records')
     num_shifts_per_day = len(shifts)
     total_periods = 7 * num_shifts_per_day
 
     # 2. CARREGAR TREBALLADORS
-    # Estructura: Nom, Dilluns_Inici, Dilluns_Final, Dimarts_Inici...
     workerdf = pd.read_excel("workers.xlsx", header=0)
-    workers_data = {}
+    # També netegem les columnes per si de cas
+    workerdf.columns = workerdf.columns.str.strip() 
     
+    workers_data = {}
     for _, row in workerdf.iterrows():
         name = row[0]
         workers_data[name] = {"period_avail": []}
         
         for day in range(7):
+            # Agafem les dades per posició (columna 1 i 2, 3 i 4...) 
+            # per evitar errors amb els noms dels dies
             w_start = row[1 + day * 2]
             w_end = row[2 + day * 2]
             
             for s in shifts:
-                # El treballador pot fer el torn si la seva disponibilitat cobreix tot el torn
+                # Ara s['start'] i s['end'] funcionaran segur
                 can_work = int((w_start <= s['start']) and (w_end >= s['end']))
                 workers_data[name]["period_avail"].append(can_work)
 
