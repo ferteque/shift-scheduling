@@ -96,11 +96,14 @@ def model_problem():
 
     # 6. RESOLUCIÓ
     # Intentem trobar el solver instal·lat al sistema
-    solver = pulp.PULP_CBC_CMD(msg=0)
+    ruta_cbc = "/usr/bin/cbc" 
     
-    # Comprovem si el solver està disponible abans d'intentar-ho
+    solver = pulp.PULP_CBC_CMD(path=ruta_cbc, msg=0)
+    
+    # Comprovem si el solver és executable a la ruta indicada
     if not solver.available():
-        print("ERROR: El solver CBC no s'ha trobat. Prova d'executar: sudo apt-get install coinor-cbc")
+        print(f"❌ ERROR: No s'ha trobat l'executable a {ruta_cbc}")
+        print("Executa 'which cbc' a la terminal i posa la ruta correcta al codi.")
         return None
 
     try:
